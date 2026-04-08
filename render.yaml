@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bulk-whatsapp-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: FRONTEND_URL
+        value: https://frontend-flame-one-49.vercel.app
+      - key: NODE_ENV
+        value: production
