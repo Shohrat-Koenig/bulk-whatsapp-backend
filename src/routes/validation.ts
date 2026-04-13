@@ -8,7 +8,7 @@ const router = Router();
 // Validate and check WhatsApp registration for a list of phone numbers
 router.post("/validate-numbers", async (req, res) => {
   const { phones, defaultCountryCode } = req.body as {
-    phones: { rawPhone: string; rowIndex: number }[];
+    phones: { rawPhone: string; rowIndex: number; country?: string | null }[];
     defaultCountryCode: string;
   };
 
