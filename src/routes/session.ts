@@ -1,43 +1,41 @@
 import { Router } from "express";
-import { whatsappService } from "../services/WhatsAppService.js";
+import { whatsappSessions } from "../services/WhatsAppSessionManager.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
-// SSE stream for QR codes and auth status
-router.get("/qr", (_req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
-
-  whatsappService.subscribeToAuth(res);
-});
-
-// Polling fallback for QR (works through Cloudflare Tunnel and proxies that buffer SSE)
-router.get("/qr-poll", (_req, res) => {
-  const status = whatsappService.getStatus();
-  const qr = whatsappService.getQrDataUrl();
+// Get current session status + QR (polling endpoint, also creates session lazily)
+router.get("/qr-poll", requireAuth, (req, res) => {
+  const userId = req.userId!;
+  const session = whatsappSessions.getOrCreateSession(userId);
   res.json({
-    status: status.status,
-    phoneNumber: status.phoneNumber,
-    profileName: status.profileName,
-    qrDataUrl: qr,
+    status: session.status,
+    phoneNumber: session.phoneNumber,
+    profileName: session.profileName,
+    qrDataUrl: session.qrDataUrl,
   });
 });
 
-// Get current session status
-router.get("/session/status", (_req, res) => {
-  const status = whatsappService.getStatus();
-  res.json(status);
+// Get current session status (no QR — for header display)
+router.get("/session/status", requireAuth, (req, res) => {
+  const userId = req.userId!;
+  const session = whatsappSessions.getSession(userId);
+  if (!session) {
+    res.json({ status: "disconnected", phoneNumber: null, profileName: null });
+    return;
+  }
+  res.json({
+    status: session.status,
+    phoneNumber: session.phoneNumber,
+    profileName: session.profileName,
+  });
 });
 
-// Logout / disconnect WhatsApp session
-router.post("/session/logout", async (_req, res) => {
+// Logout / disconnect WhatsApp session for this user
+router.post("/session/logout", requireAuth, async (req, res) => {
+  const userId = req.userId!;
   try {
-    await whatsappService.logout();
-    // Re-initialize to allow new QR scan
-    whatsappService.initialize().catch(console.error);
+    await whatsappSessions.logout(userId);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({

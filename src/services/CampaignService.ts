@@ -1,10 +1,9 @@
 import { v4 as uuidv4 } from "uuid";
-import { whatsappService } from "./WhatsAppService.js";
+import { whatsappSessions } from "./WhatsAppSessionManager.js";
 import type {
   CampaignState,
   CampaignContact,
   CampaignRequest,
-  SSESubscriber,
 } from "../types/index.js";
 
 function interpolateTemplate(
@@ -31,13 +30,12 @@ function interpolateTemplate(
     );
     if (containsMatch && containsMatch[1] !== "") return containsMatch[1];
 
-    // 4. Fuzzy: placeholder CONTAINS the column name (e.g. {Client Name} matches "Client")
+    // 4. Fuzzy: placeholder CONTAINS the column name
     const reverseMatch = Object.entries(data).find(
       ([k]) => trimmedKey.toLowerCase().includes(k.trim().toLowerCase()) && k.trim().length > 2
     );
     if (reverseMatch && reverseMatch[1] !== "") return reverseMatch[1];
 
-    // No match — leave placeholder as-is
     return `{${trimmedKey}}`;
   });
 }
@@ -47,14 +45,17 @@ function randomDelay(minMs: number, maxMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface CampaignStateWithOwner extends CampaignState {
+  ownerUserId: string;
+}
+
 class CampaignService {
-  private campaigns: Map<string, CampaignState> = new Map();
+  private campaigns: Map<string, CampaignStateWithOwner> = new Map();
   private abortFlags: Map<string, boolean> = new Map();
   private pauseFlags: Map<string, boolean> = new Map();
   private pauseResolvers: Map<string, () => void> = new Map();
-  private sseSubscribers: Map<string, Set<SSESubscriber>> = new Map();
 
-  startCampaign(request: CampaignRequest): string {
+  startCampaign(userId: string, request: CampaignRequest): string {
     const id = uuidv4();
 
     const contacts: CampaignContact[] = request.contacts.map((c) => ({
@@ -65,8 +66,9 @@ class CampaignService {
       status: "pending",
     }));
 
-    const state: CampaignState = {
+    const state: CampaignStateWithOwner = {
       id,
+      ownerUserId: userId,
       status: "running",
       contacts,
       currentIndex: 0,
@@ -79,9 +81,8 @@ class CampaignService {
     this.campaigns.set(id, state);
     this.abortFlags.set(id, false);
     this.pauseFlags.set(id, false);
-    this.sseSubscribers.set(id, new Set());
 
-    // Run the send loop asynchronously
+    // Run async
     this.runSendLoop(id, request.messageTemplate);
 
     return id;
@@ -92,47 +93,21 @@ class CampaignService {
     if (!state) return;
 
     for (let i = 0; i < state.contacts.length; i++) {
-      // Check abort
       if (this.abortFlags.get(campaignId)) {
         state.status = "stopped";
-        this.broadcastProgress(campaignId, {
-          type: "stopped",
-          campaignId,
-          ...this.getSummary(campaignId),
-        });
         break;
       }
 
-      // Check pause
       if (this.pauseFlags.get(campaignId)) {
         state.status = "paused";
-        this.broadcastProgress(campaignId, {
-          type: "paused",
-          campaignId,
-          currentIndex: i,
-          ...this.getSummary(campaignId),
-        });
-        // Wait until resumed
         await new Promise<void>((resolve) => {
           this.pauseResolvers.set(campaignId, resolve);
         });
         state.status = "running";
-        this.broadcastProgress(campaignId, {
-          type: "resumed",
-          campaignId,
-          currentIndex: i,
-          ...this.getSummary(campaignId),
-        });
       }
 
-      // Check abort again after resume
       if (this.abortFlags.get(campaignId)) {
         state.status = "stopped";
-        this.broadcastProgress(campaignId, {
-          type: "stopped",
-          campaignId,
-          ...this.getSummary(campaignId),
-        });
         break;
       }
 
@@ -140,76 +115,48 @@ class CampaignService {
       state.currentIndex = i;
       contact.status = "sending";
 
-      this.broadcastProgress(campaignId, {
-        type: "sending",
-        campaignId,
-        rowIndex: contact.rowIndex,
-        phone: contact.phone,
-        currentIndex: i,
-        total: state.contacts.length,
-      });
-
       try {
         const message = interpolateTemplate(messageTemplate, contact.data);
-        await whatsappService.sendMessage(contact.chatId, message);
+        await whatsappSessions.sendMessage(state.ownerUserId, contact.chatId, message);
         contact.status = "sent";
         contact.sentAt = new Date().toISOString();
         state.sentCount++;
-
-        this.broadcastProgress(campaignId, {
-          type: "contact_result",
-          campaignId,
-          rowIndex: contact.rowIndex,
-          phone: contact.phone,
-          status: "sent",
-          currentIndex: i,
-          ...this.getSummary(campaignId),
-        });
       } catch (err) {
         contact.status = "failed";
         contact.error = err instanceof Error ? err.message : "Unknown error";
         state.failedCount++;
-
-        this.broadcastProgress(campaignId, {
-          type: "contact_result",
-          campaignId,
-          rowIndex: contact.rowIndex,
-          phone: contact.phone,
-          status: "failed",
-          error: contact.error,
-          currentIndex: i,
-          ...this.getSummary(campaignId),
-        });
       }
 
-      // Random delay between 8-20 seconds (except after last contact)
       if (i < state.contacts.length - 1 && !this.abortFlags.get(campaignId)) {
         await randomDelay(8000, 20000);
       }
     }
 
-    // Mark completed if not stopped
     if (state.status === "running") {
       state.status = "completed";
       state.completedAt = new Date().toISOString();
-      this.broadcastProgress(campaignId, {
-        type: "completed",
-        campaignId,
-        ...this.getSummary(campaignId),
-      });
     }
   }
 
-  pauseCampaign(campaignId: string): boolean {
+  /**
+   * Returns the campaign only if it belongs to the given userId.
+   */
+  getProgress(campaignId: string, userId: string): CampaignState | null {
     const state = this.campaigns.get(campaignId);
-    if (!state || state.status !== "running") return false;
+    if (!state || state.ownerUserId !== userId) return null;
+    return state;
+  }
+
+  pauseCampaign(campaignId: string, userId: string): boolean {
+    const state = this.campaigns.get(campaignId);
+    if (!state || state.ownerUserId !== userId || state.status !== "running") return false;
     this.pauseFlags.set(campaignId, true);
     return true;
   }
 
-  resumeCampaign(campaignId: string): boolean {
+  resumeCampaign(campaignId: string, userId: string): boolean {
     const state = this.campaigns.get(campaignId);
-    if (!state || state.status !== "paused") return false;
+    if (!state || state.ownerUserId !== userId || state.status !== "paused") return false;
     this.pauseFlags.set(campaignId, false);
     const resolver = this.pauseResolvers.get(campaignId);
     if (resolver) {
@@ -219,11 +166,11 @@ class CampaignService {
     return true;
   }
 
-  stopCampaign(campaignId: string): boolean {
+  stopCampaign(campaignId: string, userId: string): boolean {
     const state = this.campaigns.get(campaignId);
-    if (!state || (state.status !== "running" && state.status !== "paused")) return false;
+    if (!state || state.ownerUserId !== userId) return false;
+    if (state.status !== "running" && state.status !== "paused") return false;
     this.abortFlags.set(campaignId, true);
-    // If paused, also resume to let the loop exit
     if (state.status === "paused") {
       this.pauseFlags.set(campaignId, false);
       const resolver = this.pauseResolvers.get(campaignId);
@@ -233,57 +180,6 @@ class CampaignService {
       }
     }
     return true;
-  }
-
-  getProgress(campaignId: string): CampaignState | null {
-    return this.campaigns.get(campaignId) || null;
-  }
-
-  subscribeToCampaign(campaignId: string, res: SSESubscriber): void {
-    const subs = this.sseSubscribers.get(campaignId);
-    if (subs) {
-      subs.add(res);
-      res.on("close", () => subs.delete(res));
-    }
-
-    // Send current state
-    const state = this.campaigns.get(campaignId);
-    if (state) {
-      res.write(
-        `data: ${JSON.stringify({
-          type: "state",
-          campaignId,
-          status: state.status,
-          contacts: state.contacts,
-          ...this.getSummary(campaignId),
-        })}\n\n`
-      );
-    }
-  }
-
-  private getSummary(campaignId: string) {
-    const state = this.campaigns.get(campaignId);
-    if (!state) return {};
-    return {
-      sentCount: state.sentCount,
-      failedCount: state.failedCount,
-      skippedCount: state.skippedCount,
-      total: state.contacts.length,
-      currentIndex: state.currentIndex,
-    };
-  }
-
-  private broadcastProgress(campaignId: string, data: Record<string, unknown>): void {
-    const subs = this.sseSubscribers.get(campaignId);
-    if (!subs) return;
-    const payload = `data: ${JSON.stringify(data)}\n\n`;
-    for (const sub of subs) {
-      try {
-        sub.write(payload);
-      } catch {
-        subs.delete(sub);
-      }
-    }
   }
 }
 

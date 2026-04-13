@@ -1,11 +1,13 @@
 import { Router } from "express";
 import { campaignService } from "../services/CampaignService.js";
+import { requireAuth } from "../middleware/auth.js";
 import type { CampaignRequest } from "../types/index.js";
 
 const router = Router();
 
-// Start a new campaign
-router.post("/send-campaign", (req, res) => {
+// Start a new campaign for the current user
+router.post("/send-campaign", requireAuth, (req, res) => {
+  const userId = req.userId!;
   const { contacts, messageTemplate } = req.body as CampaignRequest;
 
   if (!contacts || !Array.isArray(contacts) || !messageTemplate) {
@@ -23,43 +25,31 @@ router.post("/send-campaign", (req, res) => {
     return;
   }
 
-  const campaignId = campaignService.startCampaign({ contacts, messageTemplate });
+  const campaignId = campaignService.startCampaign(userId, { contacts, messageTemplate });
   res.json({ campaignId });
 });
 
-// SSE stream for campaign progress
-router.get("/campaign/:id/progress", (req, res) => {
-  const { id } = req.params;
-
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-
-  campaignService.subscribeToCampaign(id, res);
-});
-
 // Pause campaign
-router.post("/campaign/:id/pause", (req, res) => {
-  const success = campaignService.pauseCampaign(req.params.id);
+router.post("/campaign/:id/pause", requireAuth, (req, res) => {
+  const success = campaignService.pauseCampaign(String(req.params.id), req.userId!);
   res.json({ success });
 });
 
 // Resume campaign
-router.post("/campaign/:id/resume", (req, res) => {
-  const success = campaignService.resumeCampaign(req.params.id);
+router.post("/campaign/:id/resume", requireAuth, (req, res) => {
+  const success = campaignService.resumeCampaign(String(req.params.id), req.userId!);
   res.json({ success });
 });
 
 // Stop campaign
-router.post("/campaign/:id/stop", (req, res) => {
-  const success = campaignService.stopCampaign(req.params.id);
+router.post("/campaign/:id/stop", requireAuth, (req, res) => {
+  const success = campaignService.stopCampaign(String(req.params.id), req.userId!);
   res.json({ success });
 });
 
 // Get campaign state
-router.get("/campaign/:id", (req, res) => {
-  const state = campaignService.getProgress(req.params.id);
+router.get("/campaign/:id", requireAuth, (req, res) => {
+  const state = campaignService.getProgress(String(req.params.id), req.userId!);
   if (!state) {
     res.status(404).json({ error: "Campaign not found" });
     return;
