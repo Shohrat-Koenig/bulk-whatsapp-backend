@@ -12,8 +12,33 @@ function interpolateTemplate(
   data: Record<string, string>
 ): string {
   return template.replace(/\{([^}]+)\}/g, (_match, key: string) => {
-    const value = data[key.trim()];
-    return value !== undefined && value !== null && value !== "" ? value : `{${key.trim()}}`;
+    const trimmedKey = key.trim();
+
+    // 1. Exact match
+    if (trimmedKey in data && data[trimmedKey] !== "") {
+      return data[trimmedKey];
+    }
+
+    // 2. Case-insensitive exact match
+    const ciMatch = Object.entries(data).find(
+      ([k]) => k.trim().toLowerCase() === trimmedKey.toLowerCase()
+    );
+    if (ciMatch && ciMatch[1] !== "") return ciMatch[1];
+
+    // 3. Fuzzy: column CONTAINS the placeholder (e.g. {Client} matches "Client Name")
+    const containsMatch = Object.entries(data).find(
+      ([k]) => k.trim().toLowerCase().includes(trimmedKey.toLowerCase())
+    );
+    if (containsMatch && containsMatch[1] !== "") return containsMatch[1];
+
+    // 4. Fuzzy: placeholder CONTAINS the column name (e.g. {Client Name} matches "Client")
+    const reverseMatch = Object.entries(data).find(
+      ([k]) => trimmedKey.toLowerCase().includes(k.trim().toLowerCase()) && k.trim().length > 2
+    );
+    if (reverseMatch && reverseMatch[1] !== "") return reverseMatch[1];
+
+    // No match — leave placeholder as-is
+    return `{${trimmedKey}}`;
   });
 }
 

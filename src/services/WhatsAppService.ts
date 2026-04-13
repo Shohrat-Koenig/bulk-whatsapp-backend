@@ -137,6 +137,10 @@ class WhatsAppService {
     };
   }
 
+  getQrDataUrl(): string | null {
+    return this.qrDataUrl;
+  }
+
   async isRegisteredUser(chatId: string): Promise<boolean> {
     if (!this.client || this.status !== "connected") {
       throw new Error("WhatsApp not connected");

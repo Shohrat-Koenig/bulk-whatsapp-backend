@@ -6,11 +6,24 @@ const router = Router();
 // SSE stream for QR codes and auth status
 router.get("/qr", (_req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
   whatsappService.subscribeToAuth(res);
+});
+
+// Polling fallback for QR (works through Cloudflare Tunnel and proxies that buffer SSE)
+router.get("/qr-poll", (_req, res) => {
+  const status = whatsappService.getStatus();
+  const qr = whatsappService.getQrDataUrl();
+  res.json({
+    status: status.status,
+    phoneNumber: status.phoneNumber,
+    profileName: status.profileName,
+    qrDataUrl: qr,
+  });
 });
 
 // Get current session status
