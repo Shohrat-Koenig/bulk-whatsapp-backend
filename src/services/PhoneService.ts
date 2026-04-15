@@ -160,7 +160,7 @@ function cleanPhoneString(raw: string): string {
 
 export function normalizePhone(
   rawPhone: string,
-  defaultCountryCode: string,
+  defaultCountryCode?: string,
   countryName?: string | null
 ): NormalizeResult {
   const cleaned = cleanPhoneString(rawPhone);
@@ -169,11 +169,23 @@ export function normalizePhone(
     return { rawPhone, e164: null, chatId: null, isValid: false, error: "Empty phone number" };
   }
 
-  // Resolve country: if number has +, libphonenumber detects from prefix.
-  // Otherwise, use Country column value, falling back to defaultCountryCode.
-  const resolvedCountry = cleaned.startsWith("+")
-    ? (defaultCountryCode as CountryCode)
-    : (resolveCountryCode(countryName) || (defaultCountryCode as CountryCode));
+  // Priority: (1) + prefix detects automatically, (2) Country column value, (3) defaultCountryCode (optional).
+  // If none of these gives a country AND number lacks +, mark invalid.
+  const countryFromName = resolveCountryCode(countryName);
+  const fallback = defaultCountryCode ? (defaultCountryCode as CountryCode) : null;
+  const resolvedCountry: CountryCode | null = cleaned.startsWith("+")
+    ? (countryFromName || fallback) // Ignored by libphonenumber when + is present, but satisfies type
+    : (countryFromName || fallback);
+
+  if (!cleaned.startsWith("+") && !resolvedCountry) {
+    return {
+      rawPhone,
+      e164: null,
+      chatId: null,
+      isValid: false,
+      error: "Missing country — add a Country column value or use + prefix",
+    };
+  }
 
   // If the number starts with the country's calling code digits AND total length looks international,
   // prepend + so libphonenumber treats it as international rather than national.
@@ -193,7 +205,7 @@ export function normalizePhone(
   }
 
   try {
-    const phoneNumber = parsePhoneNumber(toParse, resolvedCountry);
+    const phoneNumber = parsePhoneNumber(toParse, resolvedCountry || undefined);
 
     if (!phoneNumber || !phoneNumber.isValid()) {
       return { rawPhone, e164: null, chatId: null, isValid: false, error: "Invalid phone number" };
@@ -210,7 +222,7 @@ export function normalizePhone(
 
 export function normalizePhones(
   phones: { rawPhone: string; rowIndex: number; country?: string | null }[],
-  defaultCountryCode: string
+  defaultCountryCode?: string
 ): (NormalizeResult & { rowIndex: number })[] {
   return phones.map(({ rawPhone, rowIndex, country }) => ({
     ...normalizePhone(rawPhone, defaultCountryCode, country),

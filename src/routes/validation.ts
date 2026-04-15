@@ -11,14 +11,16 @@ router.post("/validate-numbers", requireAuth, async (req, res) => {
   const userId = req.userId!;
   const { phones, defaultCountryCode } = req.body as {
     phones: { rawPhone: string; rowIndex: number; country?: string | null }[];
-    defaultCountryCode: string;
+    defaultCountryCode?: string;
   };
 
-  if (!phones || !Array.isArray(phones) || !defaultCountryCode) {
-    res.status(400).json({ error: "Missing phones or defaultCountryCode" });
+  if (!phones || !Array.isArray(phones)) {
+    res.status(400).json({ error: "Missing phones" });
     return;
   }
 
+  // defaultCountryCode is optional — if absent, numbers without country or + prefix
+  // will be marked invalid
   const normalized = normalizePhones(phones, defaultCountryCode);
   const results: ValidationResult[] = [];
 
