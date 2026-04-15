@@ -68,14 +68,14 @@ class WhatsAppSessionManager {
       puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        // NOTE: do NOT use --single-process or --no-zygote — they prevent Chromium
+        // from properly flushing session state to disk, breaking LocalAuth persistence.
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
           "--disable-accelerated-2d-canvas",
           "--no-first-run",
-          "--no-zygote",
-          "--single-process",
           "--disable-gpu",
           "--disable-software-rasterizer",
           "--disable-extensions",
