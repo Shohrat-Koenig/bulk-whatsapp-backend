@@ -1,6 +1,8 @@
 import pkg from "whatsapp-web.js";
 const { Client, LocalAuth } = pkg;
 import QRCode from "qrcode";
+import fs from "fs/promises";
+import path from "path";
 import type { WhatsAppStatus } from "../types/index.js";
 
 interface UserSession {
@@ -110,6 +112,12 @@ class WhatsAppSessionManager {
       console.error(`[WhatsApp ${userId}] Auth failure:`, msg);
       session.status = "failed";
       session.initializing = false;
+      // Clean up failed session so next poll creates a fresh one with a new QR
+      this.cleanupSessionFiles(userId).finally(() => {
+        this.sessions.delete(userId);
+        // Destroy client in background
+        client.destroy().catch(() => {});
+      });
     });
 
     client.on("disconnected", (reason: string) => {
@@ -157,6 +165,21 @@ class WhatsAppSessionManager {
       }
     }
     this.sessions.delete(userId);
+  }
+
+  /**
+   * Wipe the on-disk LocalAuth files for a user — used after auth_failure to
+   * ensure the next session attempt starts clean.
+   */
+  private async cleanupSessionFiles(userId: string): Promise<void> {
+    // whatsapp-web.js LocalAuth stores sessions at .wwebjs_auth/session-<clientId>
+    const sessionDir = path.resolve(process.cwd(), ".wwebjs_auth", `session-${userId}`);
+    try {
+      await fs.rm(sessionDir, { recursive: true, force: true });
+      console.log(`[WhatsApp ${userId}] Cleaned up session files`);
+    } catch (err) {
+      console.warn(`[WhatsApp ${userId}] Cleanup failed:`, err instanceof Error ? err.message : err);
+    }
   }
 
   async logout(userId: string): Promise<void> {
