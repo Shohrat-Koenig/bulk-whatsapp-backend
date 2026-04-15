@@ -1,4 +1,4 @@
-import { parsePhoneNumber, CountryCode, getCountries } from "libphonenumber-js";
+import { parsePhoneNumber, getCountryCallingCode, CountryCode, getCountries } from "libphonenumber-js";
 import type { NormalizeResult } from "../types/index.js";
 
 // Map country names (lowercase, normalized) to ISO 3166-1 alpha-2 codes
@@ -133,25 +133,67 @@ export function resolveCountryCode(countryName: string | undefined | null): Coun
   return null;
 }
 
+/**
+ * Clean up a raw phone string before parsing:
+ * - Strip whitespace, dashes, parens, dots (common formatting)
+ * - Handle Excel scientific notation (e.g. "2.34907E+12" -> "2349070000000")
+ * - Preserve leading + if present
+ */
+function cleanPhoneString(raw: string): string {
+  let s = raw.toString().trim();
+  if (!s) return s;
+
+  // Excel scientific notation -> plain integer string
+  if (/^-?\d+(\.\d+)?e[+-]?\d+$/i.test(s)) {
+    const n = Number(s);
+    if (Number.isFinite(n)) {
+      s = n.toFixed(0);
+    }
+  }
+
+  // Detect and preserve leading +
+  const hasPlus = s.startsWith("+");
+  // Remove everything that isn't a digit
+  const digitsOnly = s.replace(/\D/g, "");
+  return hasPlus ? "+" + digitsOnly : digitsOnly;
+}
+
 export function normalizePhone(
   rawPhone: string,
   defaultCountryCode: string,
   countryName?: string | null
 ): NormalizeResult {
-  const cleaned = rawPhone.toString().trim();
+  const cleaned = cleanPhoneString(rawPhone);
 
   if (!cleaned) {
     return { rawPhone, e164: null, chatId: null, isValid: false, error: "Empty phone number" };
   }
 
-  // If the number already has a + prefix, country code doesn't matter — libphonenumber will use it
-  // Otherwise, try to resolve from the country name, falling back to defaultCountryCode
+  // Resolve country: if number has +, libphonenumber detects from prefix.
+  // Otherwise, use Country column value, falling back to defaultCountryCode.
   const resolvedCountry = cleaned.startsWith("+")
     ? (defaultCountryCode as CountryCode)
     : (resolveCountryCode(countryName) || (defaultCountryCode as CountryCode));
 
+  // If the number starts with the country's calling code digits AND total length looks international,
+  // prepend + so libphonenumber treats it as international rather than national.
+  let toParse = cleaned;
+  if (!toParse.startsWith("+") && resolvedCountry) {
+    try {
+      const callingCode = getCountryCallingCode(resolvedCountry);
+      if (callingCode && toParse.startsWith(callingCode) && toParse.length > callingCode.length + 7) {
+        const intlAttempt = parsePhoneNumber("+" + toParse);
+        if (intlAttempt && intlAttempt.isValid()) {
+          toParse = "+" + toParse;
+        }
+      }
+    } catch {
+      // Ignore — fall back to national parse
+    }
+  }
+
   try {
-    const phoneNumber = parsePhoneNumber(cleaned, resolvedCountry);
+    const phoneNumber = parsePhoneNumber(toParse, resolvedCountry);
 
     if (!phoneNumber || !phoneNumber.isValid()) {
       return { rawPhone, e164: null, chatId: null, isValid: false, error: "Invalid phone number" };
