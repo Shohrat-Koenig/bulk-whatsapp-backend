@@ -62,35 +62,45 @@ class WhatsAppSessionManager {
       initializing: true,
     };
 
+    console.log(`[WhatsApp ${userId}] Configuring Puppeteer client...`);
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: userId }),
       puppeteer: {
         headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
           "--disable-accelerated-2d-canvas",
           "--no-first-run",
+          "--no-zygote",
+          "--single-process",
           "--disable-gpu",
+          "--disable-software-rasterizer",
+          "--disable-extensions",
         ],
       },
     });
 
     client.on("qr", async (qr: string) => {
+      console.log(`[WhatsApp ${userId}] QR code received (${qr.length} chars)`);
       session.status = "qr_pending";
       try {
         session.qrDataUrl = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
-      } catch {
+      } catch (err) {
+        console.error(`[WhatsApp ${userId}] QR render failed:`, err);
         session.qrDataUrl = null;
       }
     });
 
-    client.on("loading_screen", () => {
+    client.on("loading_screen", (percent: number, message: string) => {
+      console.log(`[WhatsApp ${userId}] Loading: ${percent}% — ${message}`);
       session.status = "connecting";
     });
 
     client.on("authenticated", () => {
+      console.log(`[WhatsApp ${userId}] Authenticated`);
       session.status = "connecting";
     });
 
@@ -130,11 +140,37 @@ class WhatsAppSessionManager {
 
     session.client = client;
 
-    client.initialize().catch((err: Error) => {
-      console.error(`[WhatsApp ${userId}] Initialize failed:`, err.message);
-      session.initializing = false;
-      session.status = "failed";
-    });
+    console.log(`[WhatsApp ${userId}] Calling client.initialize()...`);
+    const initStart = Date.now();
+
+    // Safety timeout: if initialize doesn't fire any event within 2 minutes, mark failed
+    const initTimeout = setTimeout(() => {
+      if (session.initializing) {
+        console.error(`[WhatsApp ${userId}] Initialize timed out after 2 min — marking failed`);
+        session.status = "failed";
+        session.initializing = false;
+        this.cleanupSessionFiles(userId).finally(() => {
+          this.sessions.delete(userId);
+          client.destroy().catch(() => {});
+        });
+      }
+    }, 2 * 60 * 1000);
+
+    client.initialize()
+      .then(() => {
+        const elapsed = ((Date.now() - initStart) / 1000).toFixed(1);
+        console.log(`[WhatsApp ${userId}] client.initialize() resolved after ${elapsed}s (status=${session.status})`);
+        clearTimeout(initTimeout);
+      })
+      .catch((err: Error) => {
+        console.error(`[WhatsApp ${userId}] Initialize failed:`, err.message);
+        session.initializing = false;
+        session.status = "failed";
+        clearTimeout(initTimeout);
+        this.cleanupSessionFiles(userId).finally(() => {
+          this.sessions.delete(userId);
+        });
+      });
 
     return session;
   }
