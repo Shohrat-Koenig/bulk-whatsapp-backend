@@ -42,9 +42,10 @@ RUN npx tsc
 RUN npm remove typescript
 
 # Create directory for WhatsApp session persistence
-RUN mkdir -p .wwebjs_auth && chown -R node:node /app
-
-USER node
+# Note: we run as root because Railway-mounted volumes are owned by root,
+# and the non-root `node` user would hit EACCES when writing to /app/.wwebjs_auth.
+# Chromium is launched with --no-sandbox anyway, so this is acceptable for an internal tool.
+RUN mkdir -p .wwebjs_auth
 
 EXPOSE 3001
 
