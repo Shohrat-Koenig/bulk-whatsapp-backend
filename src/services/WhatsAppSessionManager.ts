@@ -22,6 +22,15 @@ const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const INIT_TIMEOUT_MS = 90 * 1000; // 90 seconds (reduced from 2 min for faster feedback)
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_SESSIONS || "5", 10); // reduced from 10
 
+/**
+ * Convert email to a safe filesystem-friendly clientId for LocalAuth.
+ * e.g. "shohrat.dhupar@koenig-solutions.com" -> "shohrat-dhupar_koenig"
+ */
+function emailToClientId(email: string): string {
+  const local = email.split("@")[0] || email;
+  return local.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
 class WhatsAppSessionManager {
   private sessions: Map<string, UserSession> = new Map();
 
@@ -66,8 +75,9 @@ class WhatsAppSessionManager {
     };
 
     console.log(`[WhatsApp ${userId}] Configuring Puppeteer client...`);
+    const clientId = emailToClientId(userId);
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: userId }),
+      authStrategy: new LocalAuth({ clientId }),
       puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -239,7 +249,8 @@ class WhatsAppSessionManager {
    */
   private async cleanupSessionFiles(userId: string): Promise<void> {
     // whatsapp-web.js LocalAuth stores sessions at .wwebjs_auth/session-<clientId>
-    const sessionDir = path.resolve(process.cwd(), ".wwebjs_auth", `session-${userId}`);
+    const clientId = emailToClientId(userId);
+    const sessionDir = path.resolve(process.cwd(), ".wwebjs_auth", `session-${clientId}`);
     try {
       await fs.rm(sessionDir, { recursive: true, force: true });
       console.log(`[WhatsApp ${userId}] Cleaned up session files`);
