@@ -7,6 +7,7 @@ import { whatsappSessions } from "./services/WhatsAppSessionManager.js";
 import sessionRoutes from "./routes/session.js";
 import validationRoutes from "./routes/validation.js";
 import campaignRoutes from "./routes/campaign.js";
+import adminRoutes from "./routes/admin.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +23,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use("/api", sessionRoutes);
 app.use("/api", validationRoutes);
 app.use("/api", campaignRoutes);
+app.use("/api", adminRoutes);
 
 // Health check (public — no auth)
 app.get("/api/health", (_req, res) => {

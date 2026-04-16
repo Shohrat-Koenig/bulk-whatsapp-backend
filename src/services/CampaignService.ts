@@ -1,10 +1,18 @@
 import { v4 as uuidv4 } from "uuid";
+import { createClient } from "@supabase/supabase-js";
 import { whatsappSessions } from "./WhatsAppSessionManager.js";
 import type {
   CampaignState,
   CampaignContact,
   CampaignRequest,
 } from "../types/index.js";
+
+// Supabase client for persisting campaign history
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
+const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
 function interpolateTemplate(
   template: string,
@@ -47,6 +55,7 @@ function randomDelay(minMs: number, maxMs: number): Promise<void> {
 
 interface CampaignStateWithOwner extends CampaignState {
   ownerUserId: string;
+  messageTemplate: string;
 }
 
 class CampaignService {
@@ -54,6 +63,31 @@ class CampaignService {
   private abortFlags: Map<string, boolean> = new Map();
   private pauseFlags: Map<string, boolean> = new Map();
   private pauseResolvers: Map<string, () => void> = new Map();
+
+  /**
+   * Persist campaign state to Supabase — fire-and-forget, logs errors.
+   */
+  private persistCampaign(state: CampaignStateWithOwner): void {
+    if (!supabase) return;
+    supabase
+      .from("campaigns")
+      .upsert({
+        id: state.id,
+        user_email: state.ownerUserId,
+        message_template: state.messageTemplate,
+        status: state.status,
+        total_contacts: state.contacts.length,
+        sent_count: state.sentCount,
+        failed_count: state.failedCount,
+        skipped_count: state.skippedCount,
+        started_at: state.startedAt,
+        completed_at: state.completedAt || null,
+        contacts: state.contacts,
+      })
+      .then(({ error }) => {
+        if (error) console.error("[Campaign] Persist failed:", error.message);
+      });
+  }
 
   startCampaign(userId: string, request: CampaignRequest): string {
     const id = uuidv4();
@@ -69,6 +103,7 @@ class CampaignService {
     const state: CampaignStateWithOwner = {
       id,
       ownerUserId: userId,
+      messageTemplate: request.messageTemplate,
       status: "running",
       contacts,
       currentIndex: 0,
@@ -81,6 +116,9 @@ class CampaignService {
     this.campaigns.set(id, state);
     this.abortFlags.set(id, false);
     this.pauseFlags.set(id, false);
+
+    // Persist initial state
+    this.persistCampaign(state);
 
     // Run async
     this.runSendLoop(id, request.messageTemplate);
@@ -136,6 +174,9 @@ class CampaignService {
       state.status = "completed";
       state.completedAt = new Date().toISOString();
     }
+
+    // Persist final state
+    this.persistCampaign(state);
   }
 
   /**
