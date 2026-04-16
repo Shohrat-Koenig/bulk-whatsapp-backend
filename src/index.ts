@@ -4,7 +4,6 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { whatsappSessions } from "./services/WhatsAppSessionManager.js";
-import authRoutes from "./routes/auth.js";
 import sessionRoutes from "./routes/session.js";
 import validationRoutes from "./routes/validation.js";
 import campaignRoutes from "./routes/campaign.js";
@@ -19,10 +18,7 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// Auth routes (public — no auth required for signup)
-app.use("/api", authRoutes);
-
-// API Routes (all require auth, scoped to userId)
+// API Routes (all require auth via X-User-Email header)
 app.use("/api", sessionRoutes);
 app.use("/api", validationRoutes);
 app.use("/api", campaignRoutes);
