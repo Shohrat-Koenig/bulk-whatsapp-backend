@@ -17,7 +17,7 @@ interface UserSession {
   initStartedAt: number | null;
 }
 
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const INIT_TIMEOUT_MS = 90 * 1000; // 90 seconds (reduced from 2 min for faster feedback)
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_SESSIONS || "25", 10);
