@@ -4,19 +4,15 @@ import { createClient } from "@supabase/supabase-js";
 const router = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
-// Admin client using service role key — can create users with auto-confirmation
-const supabaseAdmin = SUPABASE_SERVICE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-  : null;
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /**
  * POST /api/auth/signup
- * Creates a Koenig user with auto-confirmed email (no confirmation email needed).
- * This bypasses Supabase's email rate limits entirely.
+ * Creates a Koenig user with auto-confirmed email via a Postgres function.
+ * No service role key needed — the function runs with SECURITY DEFINER.
+ * No confirmation email sent — bypasses Supabase email rate limits entirely.
  */
 router.post("/auth/signup", async (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
@@ -26,7 +22,6 @@ router.post("/auth/signup", async (req, res) => {
     return;
   }
 
-  // Enforce Koenig-only emails
   if (!email.toLowerCase().endsWith("@koenig-solutions.com")) {
     res.status(403).json({ error: "Only @koenig-solutions.com emails can sign up" });
     return;
@@ -37,34 +32,32 @@ router.post("/auth/signup", async (req, res) => {
     return;
   }
 
-  if (!supabaseAdmin) {
-    // Fallback: if service role key isn't set, tell user to try later
-    res.status(503).json({
-      error: "Sign-up service unavailable. Please contact admin.",
-    });
-    return;
-  }
-
   try {
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
-      email: email.toLowerCase(),
-      password,
-      email_confirm: true, // Auto-confirm — no verification email
+    // Call the Postgres function that creates the user directly
+    // This function runs with SECURITY DEFINER so it has full auth schema access
+    const { data, error } = await supabase.rpc("create_koenig_user", {
+      p_email: email.toLowerCase().trim(),
+      p_password: password,
     });
 
     if (error) {
-      // Handle duplicate user gracefully
-      if (error.message?.includes("already been registered") || error.message?.includes("already exists")) {
-        res.status(409).json({ error: "An account with this email already exists. Please sign in." });
-        return;
-      }
-      console.error("[Auth] Signup error:", error.message);
+      console.error("[Auth] RPC signup error:", error.message);
       res.status(400).json({ error: error.message });
       return;
     }
 
-    console.log(`[Auth] Created user: ${data.user.email} (${data.user.id})`);
-    res.json({ success: true, message: "Account created. You can now sign in." });
+    // The function returns { success: bool, error?: string, user_id?: string }
+    if (data && typeof data === "object" && "success" in data) {
+      if (data.success) {
+        console.log(`[Auth] Created user: ${email} (${data.user_id})`);
+        res.json({ success: true, message: "Account created. You can now sign in." });
+      } else {
+        const statusCode = data.error?.includes("already exists") ? 409 : 400;
+        res.status(statusCode).json({ error: data.error || "Sign-up failed" });
+      }
+    } else {
+      res.status(500).json({ error: "Unexpected response from signup function" });
+    }
   } catch (err) {
     console.error("[Auth] Signup exception:", err);
     res.status(500).json({
