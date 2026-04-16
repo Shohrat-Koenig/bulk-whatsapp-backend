@@ -14,11 +14,13 @@ interface UserSession {
   profileName: string | null;
   lastActivity: number;
   initializing: boolean;
+  initStartedAt: number | null;
 }
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_SESSIONS || "10", 10);
+const INIT_TIMEOUT_MS = 90 * 1000; // 90 seconds (reduced from 2 min for faster feedback)
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_SESSIONS || "5", 10); // reduced from 10
 
 class WhatsAppSessionManager {
   private sessions: Map<string, UserSession> = new Map();
@@ -54,12 +56,13 @@ class WhatsAppSessionManager {
     const session: UserSession = {
       userId,
       client: null,
-      status: "disconnected",
+      status: "initializing",  // NEW: explicit initializing status
       qrDataUrl: null,
       phoneNumber: null,
       profileName: null,
       lastActivity: Date.now(),
       initializing: true,
+      initStartedAt: Date.now(),
     };
 
     console.log(`[WhatsApp ${userId}] Configuring Puppeteer client...`);
@@ -86,6 +89,7 @@ class WhatsAppSessionManager {
     client.on("qr", async (qr: string) => {
       console.log(`[WhatsApp ${userId}] QR code received (${qr.length} chars)`);
       session.status = "qr_pending";
+      session.initializing = false;
       try {
         session.qrDataUrl = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
       } catch (err) {
@@ -97,11 +101,13 @@ class WhatsAppSessionManager {
     client.on("loading_screen", (percent: number, message: string) => {
       console.log(`[WhatsApp ${userId}] Loading: ${percent}% — ${message}`);
       session.status = "connecting";
+      session.initializing = false;
     });
 
     client.on("authenticated", () => {
       console.log(`[WhatsApp ${userId}] Authenticated`);
       session.status = "connecting";
+      session.initializing = false;
     });
 
     client.on("ready", () => {
@@ -122,7 +128,7 @@ class WhatsAppSessionManager {
       console.error(`[WhatsApp ${userId}] Auth failure:`, msg);
       session.status = "failed";
       session.initializing = false;
-      // Clean up failed session so next poll creates a fresh one with a new QR
+      // Clean up failed session so next attempt creates a fresh one with a new QR
       this.cleanupSessionFiles(userId).finally(() => {
         this.sessions.delete(userId);
         // Destroy client in background
@@ -143,10 +149,11 @@ class WhatsAppSessionManager {
     console.log(`[WhatsApp ${userId}] Calling client.initialize()...`);
     const initStart = Date.now();
 
-    // Safety timeout: if initialize doesn't fire any event within 2 minutes, mark failed
+    // Safety timeout: if initialize doesn't fire any event within INIT_TIMEOUT_MS, mark failed
     const initTimeout = setTimeout(() => {
       if (session.initializing) {
-        console.error(`[WhatsApp ${userId}] Initialize timed out after 2 min — marking failed`);
+        const elapsed = ((Date.now() - initStart) / 1000).toFixed(1);
+        console.error(`[WhatsApp ${userId}] Initialize timed out after ${elapsed}s — marking failed`);
         session.status = "failed";
         session.initializing = false;
         this.cleanupSessionFiles(userId).finally(() => {
@@ -154,7 +161,7 @@ class WhatsAppSessionManager {
           client.destroy().catch(() => {});
         });
       }
-    }, 2 * 60 * 1000);
+    }, INIT_TIMEOUT_MS);
 
     client.initialize()
       .then(() => {
@@ -201,6 +208,29 @@ class WhatsAppSessionManager {
       }
     }
     this.sessions.delete(userId);
+  }
+
+  /**
+   * Force-retry: destroy existing (possibly stuck) session and create a fresh one.
+   * Called when user clicks "Retry" after a failed/stuck init.
+   */
+  async retrySession(userId: string): Promise<UserSession> {
+    console.log(`[WhatsApp ${userId}] Retry requested — destroying old session`);
+    const existing = this.sessions.get(userId);
+    if (existing) {
+      if (existing.client) {
+        try {
+          await existing.client.destroy();
+        } catch {
+          // Ignore
+        }
+      }
+      this.sessions.delete(userId);
+    }
+    // Clean up stale auth files that might be corrupted
+    await this.cleanupSessionFiles(userId);
+    // Create a fresh session
+    return this.getOrCreateSession(userId);
   }
 
   /**
@@ -290,10 +320,19 @@ class WhatsAppSessionManager {
   }
 
   getStats() {
+    const sessionDetails = Array.from(this.sessions.entries()).map(([userId, s]) => ({
+      userId,
+      status: s.status,
+      initializing: s.initializing,
+      initAge: s.initStartedAt ? Math.round((Date.now() - s.initStartedAt) / 1000) : null,
+      idleMinutes: Math.round((Date.now() - s.lastActivity) / 60000),
+    }));
+
     return {
       activeSessions: this.sessions.size,
       maxConcurrent: MAX_CONCURRENT,
       idleTimeoutMs: IDLE_TIMEOUT_MS,
+      sessions: sessionDetails,
     };
   }
 }

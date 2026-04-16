@@ -31,6 +31,25 @@ router.get("/session/status", requireAuth, (req, res) => {
   });
 });
 
+// Force retry — destroy stuck/failed session and start fresh
+router.post("/session/retry", requireAuth, async (req, res) => {
+  const userId = req.userId!;
+  try {
+    console.log(`[Session] Retry requested by ${userId}`);
+    const session = await whatsappSessions.retrySession(userId);
+    res.json({
+      status: session.status,
+      phoneNumber: session.phoneNumber,
+      profileName: session.profileName,
+      qrDataUrl: session.qrDataUrl,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Retry failed",
+    });
+  }
+});
+
 // Logout / disconnect WhatsApp session for this user
 router.post("/session/logout", requireAuth, async (req, res) => {
   const userId = req.userId!;

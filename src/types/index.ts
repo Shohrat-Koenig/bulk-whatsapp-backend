@@ -2,6 +2,7 @@ import type { Response } from "express";
 
 export type WhatsAppStatus =
   | "disconnected"
+  | "initializing"
   | "qr_pending"
   | "connecting"
   | "connected"
