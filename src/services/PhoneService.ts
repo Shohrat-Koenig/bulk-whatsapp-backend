@@ -177,19 +177,38 @@ export function normalizePhone(
     ? (countryFromName || fallback) // Ignored by libphonenumber when + is present, but satisfies type
     : (countryFromName || fallback);
 
-  if (!cleaned.startsWith("+") && !resolvedCountry) {
-    return {
-      rawPhone,
-      e164: null,
-      chatId: null,
-      isValid: false,
-      error: "Missing country — add a Country column value or use + prefix",
-    };
+  // If no country and no + prefix, try adding + as a smart fallback.
+  // Many numbers already include the country code (e.g. 260963314235 = Zambia).
+  let toParse = cleaned;
+
+  if (!toParse.startsWith("+") && !resolvedCountry) {
+    // Try parsing with + prefix — if it's valid, use it
+    try {
+      const intlAttempt = parsePhoneNumber("+" + toParse);
+      if (intlAttempt && intlAttempt.isValid()) {
+        toParse = "+" + toParse;
+      } else {
+        return {
+          rawPhone,
+          e164: null,
+          chatId: null,
+          isValid: false,
+          error: "Missing country — add a Country column value or use + prefix",
+        };
+      }
+    } catch {
+      return {
+        rawPhone,
+        e164: null,
+        chatId: null,
+        isValid: false,
+        error: "Missing country — add a Country column value or use + prefix",
+      };
+    }
   }
 
   // If the number starts with the country's calling code digits AND total length looks international,
   // prepend + so libphonenumber treats it as international rather than national.
-  let toParse = cleaned;
   if (!toParse.startsWith("+") && resolvedCountry) {
     try {
       const callingCode = getCountryCallingCode(resolvedCountry);
