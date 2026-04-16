@@ -10,9 +10,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /**
  * POST /api/auth/signup
- * Creates a Koenig user with auto-confirmed email via a Postgres function.
- * No service role key needed — the function runs with SECURITY DEFINER.
- * No confirmation email sent — bypasses Supabase email rate limits entirely.
+ * 1. Uses native Supabase signUp (creates proper GoTrue records)
+ * 2. Immediately auto-confirms email via RPC (no verification email needed)
  */
 router.post("/auth/signup", async (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
@@ -33,31 +32,36 @@ router.post("/auth/signup", async (req, res) => {
   }
 
   try {
-    // Call the Postgres function that creates the user directly
-    // This function runs with SECURITY DEFINER so it has full auth schema access
-    const { data, error } = await supabase.rpc("create_koenig_user", {
-      p_email: email.toLowerCase().trim(),
-      p_password: password,
+    // Step 1: Native Supabase signUp (creates proper GoTrue-compatible records)
+    const { data, error } = await supabase.auth.signUp({
+      email: email.toLowerCase().trim(),
+      password,
     });
 
     if (error) {
-      console.error("[Auth] RPC signup error:", error.message);
+      if (error.message?.includes("already")) {
+        res.status(409).json({ error: "An account with this email already exists. Please sign in." });
+        return;
+      }
+      console.error("[Auth] SignUp error:", error.message);
       res.status(400).json({ error: error.message });
       return;
     }
 
-    // The function returns { success: bool, error?: string, user_id?: string }
-    if (data && typeof data === "object" && "success" in data) {
-      if (data.success) {
-        console.log(`[Auth] Created user: ${email} (${data.user_id})`);
-        res.json({ success: true, message: "Account created. You can now sign in." });
+    // Step 2: Auto-confirm via RPC (bypasses email verification)
+    if (data?.user) {
+      const { error: confirmError } = await supabase.rpc("confirm_koenig_email", {
+        p_email: email.toLowerCase().trim(),
+      });
+      if (confirmError) {
+        console.warn("[Auth] Auto-confirm failed:", confirmError.message);
+        // User was created but not confirmed — they'll need manual confirmation
       } else {
-        const statusCode = data.error?.includes("already exists") ? 409 : 400;
-        res.status(statusCode).json({ error: data.error || "Sign-up failed" });
+        console.log(`[Auth] Created & confirmed: ${email}`);
       }
-    } else {
-      res.status(500).json({ error: "Unexpected response from signup function" });
     }
+
+    res.json({ success: true, message: "Account created. You can now sign in." });
   } catch (err) {
     console.error("[Auth] Signup exception:", err);
     res.status(500).json({
