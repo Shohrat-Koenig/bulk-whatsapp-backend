@@ -25,7 +25,16 @@ app.use("/api", campaignRoutes);
 
 // Health check (public — no auth)
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", ...whatsappSessions.getStats() });
+  const mem = process.memoryUsage();
+  res.json({
+    status: "ok",
+    ...whatsappSessions.getStats(),
+    memory: {
+      rss: `${Math.round(mem.rss / 1024 / 1024)} MB`,
+      heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)} MB`,
+      heapTotal: `${Math.round(mem.heapTotal / 1024 / 1024)} MB`,
+    },
+  });
 });
 
 // Serve frontend static files if available (local unified server mode)
