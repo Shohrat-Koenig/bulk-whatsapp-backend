@@ -20,7 +20,7 @@ interface UserSession {
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const INIT_TIMEOUT_MS = 90 * 1000; // 90 seconds (reduced from 2 min for faster feedback)
-const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_SESSIONS || "5", 10); // reduced from 10
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_SESSIONS || "25", 10);
 
 /**
  * Convert email to a safe filesystem-friendly clientId for LocalAuth.
