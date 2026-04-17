@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { createClient } from "@supabase/supabase-js";
 import { whatsappSessions } from "./WhatsAppSessionManager.js";
+import { checkAllowed } from "./QuotaService.js";
 import type {
   CampaignState,
   CampaignContact,
@@ -151,6 +152,23 @@ class CampaignService {
 
       const contact = state.contacts[i];
       state.currentIndex = i;
+
+      // Mid-campaign quota check — every 10 messages, verify user hasn't exceeded daily/monthly cap
+      if (i > 0 && i % 10 === 0) {
+        const quotaCheck = await checkAllowed(state.ownerUserId, 1);
+        if (!quotaCheck.allowed) {
+          // Mark remaining as skipped
+          for (let j = i; j < state.contacts.length; j++) {
+            state.contacts[j].status = "skipped";
+            state.contacts[j].error = quotaCheck.reason;
+            state.skippedCount++;
+          }
+          state.status = "stopped";
+          console.log(`[Campaign ${campaignId}] Quota hit — stopping. Skipped ${state.contacts.length - i}.`);
+          break;
+        }
+      }
+
       contact.status = "sending";
 
       try {
@@ -159,6 +177,11 @@ class CampaignService {
         contact.status = "sent";
         contact.sentAt = new Date().toISOString();
         state.sentCount++;
+
+        // Periodically persist progress so admin dashboard + quota reflect live state
+        if (state.sentCount % 5 === 0) {
+          this.persistCampaign(state);
+        }
       } catch (err) {
         contact.status = "failed";
         contact.error = err instanceof Error ? err.message : "Unknown error";
@@ -166,7 +189,8 @@ class CampaignService {
       }
 
       if (i < state.contacts.length - 1 && !this.abortFlags.get(campaignId)) {
-        await randomDelay(8000, 20000);
+        // 20-45 second randomized delay — safer anti-ban profile
+        await randomDelay(20000, 45000);
       }
     }
 
